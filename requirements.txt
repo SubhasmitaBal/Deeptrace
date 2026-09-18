@@ -1,0 +1,11 @@
+streamlit>=1.44,<2
+numpy>=1.26,<3
+pandas>=2.2,<3
+opencv-python-headless>=4.10,<5
+Pillow>=10.4,<12
+scipy>=1.13,<2
+imageio-ffmpeg>=0.5,<1
+torch>=2.6
+torchvision>=0.21
+transformers>=4.45,<5
+safetensors>=0.4
