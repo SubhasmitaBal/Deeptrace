@@ -503,8 +503,21 @@ def fuse(row, visual_weight, threshold, disagreement_limit):
     visual = row["visual_model_score"]
     audio = row["audio_model_score"]
 
-    if visual is None or audio is None:
-        return None, "Insufficient multimodal evidence"
+    # Visual-only mode is supported because the current project does not
+    # include an audio deepfake detector yet.
+    if visual is not None and audio is None:
+        if visual >= threshold:
+            return float(visual), "Visual model signal — review"
+        return float(visual), "Visual model signal — below threshold"
+
+    # Keep audio-only support available for future expansion.
+    if visual is None and audio is not None:
+        if audio >= threshold:
+            return float(audio), "Audio model signal — review"
+        return float(audio), "Audio model signal — below threshold"
+
+    if visual is None and audio is None:
+        return None, "Insufficient detector evidence"
 
     if abs(visual - audio) > disagreement_limit:
         return None, "Abstain: detectors disagree"
@@ -512,9 +525,9 @@ def fuse(row, visual_weight, threshold, disagreement_limit):
     score = visual_weight * visual + (1 - visual_weight) * audio
 
     if score >= threshold:
-        return float(score), "Elevated model signal — review"
+        return float(score), "Multimodal model signal — review"
 
-    return float(score), "Below review threshold — not verified"
+    return float(score), "Multimodal signal — below threshold"
 
 
 def display_score(label, value):
@@ -618,19 +631,24 @@ with st.sidebar:
         expanded=True,
     ):
         st.caption(
-            "Use compatible, trusted classification checkpoints. "
-            "Enter a local model folder or Hugging Face model ID. "
-            "Check the model card for preprocessing and fake-label mapping."
+            "A visual deepfake/AI-generated-image baseline is preconfigured. "
+            "Audio remains optional for the current version. "
+            "Check each model card for preprocessing and fake-label mapping."
         )
 
         visual_reference = st.text_input(
             "Visual model ID or local folder",
-            placeholder="Leave blank for quality-only inspection",
+            value="dima806/deepfake_vs_real_image_detection",
+            help=(
+                "Baseline visual detector. It is downloaded from Hugging Face "
+                "the first time you run an investigation."
+            ),
         ).strip()
 
         visual_label = st.text_input(
             "Exact visual fake-class label",
-            placeholder="Use the model's documented output label",
+            value="Fake",
+            help="This model documents the fake class as 'Fake'.",
         ).strip()
 
         audio_reference = st.text_input(
@@ -653,7 +671,7 @@ with st.sidebar:
         step=0.05,
     )
 
-    st.caption(f"Audio weight: {1 - visual_weight:.2f}")
+    st.caption(f"Audio weight: {1 - visual_weight:.2f} (unused until an audio detector is configured)")
 
     threshold = st.slider(
         "Review threshold",
@@ -682,6 +700,182 @@ with st.sidebar:
         st.rerun()
 
 
+media_type = st.radio(
+    "Media type",
+    ["Video", "Image"],
+    horizontal=True,
+)
+
+if media_type == "Image":
+    image_uploaded = st.file_uploader(
+        "Upload a consented or appropriately licensed image",
+        type=["jpg", "jpeg", "png", "webp"],
+    )
+
+    if image_uploaded is None:
+        st.markdown(
+            "### Start an image investigation\n"
+            "Upload a JPG, JPEG, PNG, or WEBP image."
+        )
+        st.stop()
+
+    if image_uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
+        st.error(
+            f"Please upload a file smaller than {MAX_UPLOAD_MB} MB."
+        )
+        st.stop()
+
+    image_data = image_uploaded.getvalue()
+
+    try:
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    except Exception as exc:
+        st.error(f"Could not open this image: {type(exc).__name__}.")
+        st.stop()
+
+    st.image(image, caption=image_uploaded.name, use_container_width=True)
+
+    image_hash = hashlib.sha256(image_data).hexdigest()
+
+    st.subheader("Image investigation")
+
+    image_key = hashlib.sha256(
+        json.dumps(
+            {
+                "media_sha256": image_hash,
+                "visual_model": visual_reference,
+                "visual_fake_label": visual_label,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+    if st.button(
+        "Run Image Investigation",
+        type="primary",
+        disabled=not visual_reference or not visual_label,
+    ):
+        progress = st.progress(0.0, text="Loading visual detector…")
+
+        try:
+            detector = load_detector(
+                "image-classification",
+                visual_reference,
+            )
+            progress.progress(0.5, text="Analyzing image…")
+
+            predictions = detector(image, top_k=None)
+            visual_value = fake_label_score(
+                predictions,
+                visual_label,
+            )
+
+            brightness, sharpness = image_quality(
+                [np.asarray(image)]
+            )
+
+            if visual_value >= threshold:
+                status = "Visual model signal — review"
+            else:
+                status = "Visual model signal — below threshold"
+
+            image_result = {
+                "score": float(visual_value),
+                "status": status,
+                "brightness": brightness,
+                "sharpness": sharpness,
+                "image_hash": image_hash,
+                "model": visual_reference,
+                "fake_label": visual_label,
+                "run_key": image_key,
+            }
+
+            st.session_state["image_investigation"] = image_result
+            progress.progress(1.0, text="Image investigation complete.")
+            progress.empty()
+
+        except Exception as exc:
+            progress.empty()
+            st.error(
+                f"Image investigation failed: "
+                f"{type(exc).__name__}: {str(exc)[:400]}"
+            )
+            st.stop()
+
+    image_result = st.session_state.get("image_investigation")
+
+    if not image_result or image_result.get("run_key") != image_key:
+        st.info(
+            "Run the image investigation for this file and model configuration."
+        )
+        st.stop()
+
+    result_col1, result_col2 = st.columns(2)
+
+    with result_col1:
+        st.subheader(image_result["status"])
+        display_score(
+            "Visual fake-class model score",
+            image_result["score"],
+        )
+
+    with result_col2:
+        st.subheader("Image quality observations")
+        st.write(
+            f"Brightness: {image_result['brightness']:.2f} / 255"
+        )
+        st.write(
+            f"Laplacian variance: {image_result['sharpness']:.2f}"
+        )
+
+    st.info(
+        "The visual score is an uncalibrated model signal, not a "
+        "percentage probability that the image is fake. Image quality "
+        "measurements are not evidence of manipulation."
+    )
+
+    st.subheader("Image evidence")
+    st.write(
+        f"Model: `{image_result['model']}`  \n"
+        f"Fake-class label: `{image_result['fake_label']}`"
+    )
+
+    st.download_button(
+        "Download image investigation report · JSON",
+        data=json.dumps(
+            {
+                "project": "DeepTrace",
+                "version": "0.1-research-prototype",
+                "media_type": "image",
+                "filename": image_uploaded.name,
+                "file_sha256": image_result["image_hash"],
+                "model": image_result["model"],
+                "fake_label": image_result["fake_label"],
+                "visual_model_score": image_result["score"],
+                "status": image_result["status"],
+                "quality": {
+                    "brightness_0_255": image_result["brightness"],
+                    "sharpness_variance": image_result["sharpness"],
+                },
+                "limitations": [
+                    "Not a validated authenticity detector.",
+                    "Model output is not a calibrated authenticity probability.",
+                    "The visual model classifies the image as a whole.",
+                    "Quality measurements are not evidence of manipulation.",
+                ],
+            },
+            indent=2,
+            allow_nan=False,
+        ),
+        file_name="deeptrace_image_report.json",
+        mime="application/json",
+    )
+
+    st.stop()
+
+
+# -------------------- VIDEO MODE --------------------
+
 uploaded = st.file_uploader(
     "Upload a consented or appropriately licensed video",
     type=["mp4", "mov", "avi", "webm", "mkv"],
@@ -689,7 +883,7 @@ uploaded = st.file_uploader(
 
 if uploaded is None:
     st.markdown(
-        "### Start an investigation\n"
+        "### Start a video investigation\n"
         "Upload a short video, then select **Run investigation**. "
         "The app works without model checkpoints in quality-inspection mode."
     )
@@ -701,7 +895,6 @@ if uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
         f"Please upload a file smaller than {MAX_UPLOAD_MB} MB."
     )
     st.stop()
-
 
 data = uploaded.getvalue()
 media_hash = hashlib.sha256(data).hexdigest()
@@ -944,7 +1137,7 @@ with inspect_tab:
         )
 
         display_score(
-            "Experimental fused score",
+            "Model evidence score",
             row["fused_model_score"],
         )
 
