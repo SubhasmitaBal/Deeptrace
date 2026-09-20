@@ -19,9 +19,10 @@ from scipy.signal import resample_poly
 
 
 st.set_page_config(
-    page_title="DeepTrace | Multimodal Investigator",
+    page_title="DeepTrace | Media Authenticity",
     page_icon="🔎",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 MAX_UPLOAD_MB = 100
@@ -507,27 +508,50 @@ def fuse(row, visual_weight, threshold, disagreement_limit):
     # include an audio deepfake detector yet.
     if visual is not None and audio is None:
         if visual >= threshold:
-            return float(visual), "Visual model signal — review"
-        return float(visual), "Visual model signal — below threshold"
+            return float(visual), "Likely AI-Generated / Manipulated"
+        return float(visual), "Likely Real"
 
     # Keep audio-only support available for future expansion.
     if visual is None and audio is not None:
         if audio >= threshold:
-            return float(audio), "Audio model signal — review"
-        return float(audio), "Audio model signal — below threshold"
+            return float(audio), "Likely AI-Generated / Manipulated"
+        return float(audio), "Likely Real"
 
     if visual is None and audio is None:
         return None, "Insufficient detector evidence"
 
     if abs(visual - audio) > disagreement_limit:
-        return None, "Abstain: detectors disagree"
+        return None, "Needs Review — visual and audio checks disagree"
 
     score = visual_weight * visual + (1 - visual_weight) * audio
 
     if score >= threshold:
-        return float(score), "Multimodal model signal — review"
+        return float(score), "Likely AI-Generated / Manipulated"
 
-    return float(score), "Multimodal signal — below threshold"
+    return float(score), "Likely Real"
+
+
+def plain_result(score, threshold, disagreement=False):
+    """Convert technical detector output into simple user-facing language."""
+    if disagreement:
+        return (
+            "🟡 Needs Review",
+            "The visual and audio checks disagree, so DeepTrace will not call it fake or real."
+        )
+    if score is None:
+        return (
+            "⚪ Not Enough Evidence",
+            "The available detector could not provide a usable result."
+        )
+    if score >= threshold:
+        return (
+            "🔴 Likely AI-Generated / Manipulated",
+            "The model found a stronger signal associated with fake or generated media."
+        )
+    return (
+        "🟢 Likely Real",
+        "The model did not find a strong fake/AI-generated signal."
+    )
 
 
 def display_score(label, value):
@@ -537,7 +561,7 @@ def display_score(label, value):
     )
 
     if value is not None:
-        st.progress(float(value))
+        st.progress(max(0.0, min(1.0, float(value))))
 
 
 def explain_segment(row, question):
@@ -599,130 +623,443 @@ def explain_segment(row, question):
     )
 
 
+
 # ---------------------------------------------------------
 # Interface
 # ---------------------------------------------------------
 
-st.title("🔎 DeepTrace")
-st.caption(
-    "Evidence-grounded multimodal investigation • "
-    "Local research prototype • No fabricated predictions"
-)
+# -------------------- Professional UI styling --------------------
+
+st.markdown("""
+<style>
+/* Main page */
+.block-container {
+    max-width: 1180px;
+    padding-top: 2.2rem;
+    padding-bottom: 4rem;
+}
+
+[data-testid="stHeader"] {
+    background: transparent;
+}
+
+/* Typography */
+.deeptrace-kicker {
+    font-size: .78rem;
+    font-weight: 800;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    opacity: .65;
+    margin-bottom: .35rem;
+}
+
+.deeptrace-title {
+    font-size: clamp(2.2rem, 5vw, 4rem);
+    line-height: 1;
+    font-weight: 850;
+    letter-spacing: -.055em;
+    margin: 0;
+}
+
+.deeptrace-subtitle {
+    font-size: 1.05rem;
+    line-height: 1.6;
+    opacity: .72;
+    max-width: 760px;
+    margin-top: .8rem;
+}
+
+/* Hero */
+.deeptrace-hero {
+    padding: 1.8rem 2rem;
+    border: 1px solid rgba(128,128,128,.20);
+    border-radius: 24px;
+    background:
+        linear-gradient(135deg,
+            rgba(100,150,255,.13),
+            rgba(128,128,128,.055));
+    margin-bottom: 1.2rem;
+}
+
+.deeptrace-pill {
+    display: inline-block;
+    padding: .35rem .7rem;
+    border-radius: 999px;
+    font-size: .78rem;
+    font-weight: 750;
+    border: 1px solid rgba(128,128,128,.25);
+    background: rgba(128,128,128,.08);
+    margin-bottom: .8rem;
+}
+
+/* How it works */
+.deeptrace-steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: .8rem;
+    margin: 1rem 0 1.4rem;
+}
+
+.deeptrace-step {
+    padding: 1rem;
+    border: 1px solid rgba(128,128,128,.18);
+    border-radius: 16px;
+    background: rgba(128,128,128,.045);
+}
+
+.deeptrace-step-number {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    background: rgba(100,150,255,.18);
+    margin-bottom: .55rem;
+}
+
+.deeptrace-step-title {
+    font-weight: 750;
+    margin-bottom: .25rem;
+}
+
+.deeptrace-step-text {
+    font-size: .86rem;
+    opacity: .68;
+    line-height: 1.45;
+}
+
+/* Upload area */
+.deeptrace-upload-card {
+    border: 1px solid rgba(128,128,128,.22);
+    border-radius: 20px;
+    padding: 1.25rem;
+    background: rgba(128,128,128,.035);
+    margin: .7rem 0 1rem;
+}
+
+.deeptrace-section-title {
+    font-size: 1.35rem;
+    font-weight: 800;
+    letter-spacing: -.025em;
+    margin: .4rem 0 .2rem;
+}
+
+.deeptrace-section-subtitle {
+    opacity: .65;
+    font-size: .9rem;
+    margin-bottom: .9rem;
+}
+
+/* Result cards */
+.deeptrace-result {
+    border-radius: 22px;
+    padding: 1.5rem;
+    border: 1px solid rgba(128,128,128,.22);
+    margin: 1rem 0;
+}
+
+.deeptrace-result-real {
+    background: rgba(70, 180, 110, .09);
+    border-color: rgba(70, 180, 110, .35);
+}
+
+.deeptrace-result-review {
+    background: rgba(220, 180, 60, .10);
+    border-color: rgba(220, 180, 60, .38);
+}
+
+.deeptrace-result-ai {
+    background: rgba(220, 75, 75, .09);
+    border-color: rgba(220, 75, 75, .35);
+}
+
+.deeptrace-result-icon {
+    font-size: 2.2rem;
+    margin-bottom: .25rem;
+}
+
+.deeptrace-result-title {
+    font-size: 1.7rem;
+    font-weight: 850;
+    letter-spacing: -.035em;
+}
+
+.deeptrace-result-message {
+    margin-top: .4rem;
+    line-height: 1.55;
+    opacity: .78;
+}
+
+/* Explanation */
+.deeptrace-explain {
+    padding: 1rem 1.15rem;
+    border-radius: 16px;
+    background: rgba(128,128,128,.055);
+    border: 1px solid rgba(128,128,128,.16);
+    line-height: 1.55;
+    margin: .8rem 0;
+}
+
+.deeptrace-disclaimer {
+    font-size: .82rem;
+    line-height: 1.5;
+    opacity: .65;
+    margin-top: .7rem;
+}
+
+/* Metrics */
+[data-testid="stMetric"] {
+    border: 1px solid rgba(128,128,128,.17);
+    border-radius: 16px;
+    padding: .8rem 1rem;
+    background: rgba(128,128,128,.035);
+}
+
+/* Buttons */
+.stButton > button {
+    border-radius: 12px;
+    min-height: 46px;
+    font-weight: 750;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    border-right: 1px solid rgba(128,128,128,.15);
+}
+
+/* Mobile */
+@media (max-width: 760px) {
+    .block-container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+        padding-top: 1.2rem;
+    }
+
+    .deeptrace-hero {
+        padding: 1.25rem;
+        border-radius: 18px;
+    }
+
+    .deeptrace-steps {
+        grid-template-columns: 1fr;
+    }
+
+    .deeptrace-title {
+        font-size: 2.35rem;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# -------------------- Header --------------------
+
+st.markdown("""
+<div class="deeptrace-hero">
+    <div class="deeptrace-pill">🔎 AI MEDIA SCREENING • RESEARCH PROTOTYPE</div>
+    <div class="deeptrace-title">DeepTrace</div>
+    <div class="deeptrace-subtitle">
+        Check an image or video for signals commonly associated with
+        AI-generated or manipulated media.
+        <b>Simple result first. Technical details when you need them.</b>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="deeptrace-steps">
+    <div class="deeptrace-step">
+        <div class="deeptrace-step-number">1</div>
+        <div class="deeptrace-step-title">Upload</div>
+        <div class="deeptrace-step-text">Choose an image or a short video you are allowed to analyze.</div>
+    </div>
+    <div class="deeptrace-step">
+        <div class="deeptrace-step-number">2</div>
+        <div class="deeptrace-step-title">Analyze</div>
+        <div class="deeptrace-step-text">DeepTrace checks the media with the configured AI detection models.</div>
+    </div>
+    <div class="deeptrace-step">
+        <div class="deeptrace-step-number">3</div>
+        <div class="deeptrace-step-title">Understand</div>
+        <div class="deeptrace-step-text">You get a plain-language result plus optional technical evidence.</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 st.info(
-    "Model scores are not calibrated authenticity probabilities. "
-    "Blur, darkness, silence, and clipping are quality observations—not "
-    "deepfake indicators. Lip-sync detection is not included."
+    "💡 **Important:** A result is a screening signal, not proof. "
+    "“Likely Real” means the detector did not find a strong AI/manipulation signal. "
+    "It does not guarantee authenticity."
 )
 
+# -------------------- Advanced settings --------------------
 
 with st.sidebar:
-    st.header("Investigation settings")
+    st.markdown("## ⚙️ Advanced settings")
+    st.caption(
+        "These settings are mainly for testing and research. "
+        "Most users can leave the defaults unchanged."
+    )
 
     window_seconds = st.select_slider(
-        "Segment length",
+        "Video segment length",
         options=[2, 4, 6, 10],
         value=4,
         format_func=lambda value: f"{value} seconds",
     )
 
-    with st.expander(
-        "Optional pretrained detectors",
-        expanded=True,
-    ):
-        st.caption(
-            "A visual deepfake/AI-generated-image baseline is preconfigured. "
-            "Audio remains optional for the current version. "
-            "Check each model card for preprocessing and fake-label mapping."
-        )
-
+    with st.expander("AI detection models", expanded=True):
         visual_reference = st.text_input(
-            "Visual model ID or local folder",
+            "Image / video model",
             value="dima806/deepfake_vs_real_image_detection",
-            help=(
-                "Baseline visual detector. It is downloaded from Hugging Face "
-                "the first time you run an investigation."
-            ),
+            help="Visual detector used for image analysis and sampled video frames.",
         ).strip()
 
         visual_label = st.text_input(
-            "Exact visual fake-class label",
+            "Visual AI/fake label",
             value="Fake",
-            help="This model documents the fake class as 'Fake'.",
+            help="Exact fake-class label documented by the model.",
+        ).strip()
+
+        image_second_reference = st.text_input(
+            "Second image model (recommended)",
+            value="delpot/steganograph-ia-detector",
+            help="A second independent image detector used to reduce false confidence.",
+        ).strip()
+
+        image_second_label = st.text_input(
+            "Second model fake label",
+            value="ai_generated",
+            help="Exact AI-generated class label documented by the second model.",
         ).strip()
 
         audio_reference = st.text_input(
-            "Audio model ID or local folder",
-            placeholder="Leave blank for quality-only inspection",
+            "Audio model (optional)",
+            placeholder="Leave blank if not using audio detection",
         ).strip()
 
         audio_label = st.text_input(
-            "Exact audio fake-class label",
-            placeholder="Use the model's documented output label",
+            "Audio AI/fake label",
+            placeholder="Use the label documented by the audio model",
         ).strip()
 
-    st.subheader("Experimental fusion")
+    with st.expander("Video fusion settings"):
+        visual_weight = st.slider(
+            "Visual contribution",
+            min_value=0.1,
+            max_value=0.9,
+            value=0.5,
+            step=0.05,
+        )
 
-    visual_weight = st.slider(
-        "Visual weight",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.5,
-        step=0.05,
-    )
+        threshold = st.slider(
+            "Review threshold",
+            min_value=0.5,
+            max_value=0.95,
+            value=0.7,
+            step=0.05,
+        )
 
-    st.caption(f"Audio weight: {1 - visual_weight:.2f} (unused until an audio detector is configured)")
+        disagreement_limit = st.slider(
+            "Maximum detector disagreement",
+            min_value=0.1,
+            max_value=0.9,
+            value=0.5,
+            step=0.05,
+        )
 
-    threshold = st.slider(
-        "Review threshold",
-        min_value=0.5,
-        max_value=0.95,
-        value=0.7,
-        step=0.05,
-    )
+        st.caption(
+            "These values are experimental. They are not calibrated probabilities."
+        )
 
-    disagreement_limit = st.slider(
-        "Maximum detector disagreement",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.5,
-        step=0.05,
-    )
-
-    st.caption(
-        "Fusion assumes compatible score meanings. These settings are "
-        "experimental and require validation on held-out data."
-    )
-
-    if st.button("Clear analysis and unload models"):
+    if st.button("Clear results and unload models"):
         st.session_state.pop("investigation", None)
+        st.session_state.pop("image_investigation", None)
         load_detector.clear()
         st.rerun()
 
 
-media_type = st.radio(
-    "Media type",
-    ["Video", "Image"],
-    horizontal=True,
+# -------------------- Media selection --------------------
+
+st.markdown('<div class="deeptrace-section-title">What would you like to check?</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="deeptrace-section-subtitle">Choose one type of media to begin.</div>',
+    unsafe_allow_html=True,
 )
 
+media_type = st.radio(
+    "Media type",
+    ["Image", "Video"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+# -------------------- Result helper --------------------
+
+def show_simple_result(status, detail):
+    if status == "Likely AI-Generated / Manipulated":
+        css = "deeptrace-result-ai"
+        icon = "🔴"
+        title = "Likely AI-Generated or Manipulated"
+    elif status.startswith("Needs Review"):
+        css = "deeptrace-result-review"
+        icon = "🟡"
+        title = "Not Sure — Needs Review"
+    elif status == "Insufficient detector evidence":
+        css = "deeptrace-result-review"
+        icon = "🟡"
+        title = "Not Enough Evidence"
+    else:
+        css = "deeptrace-result-real"
+        icon = "🟢"
+        title = "Likely Real"
+
+    st.markdown(
+        f"""
+        <div class="deeptrace-result {css}">
+            <div class="deeptrace-result-icon">{icon}</div>
+            <div class="deeptrace-result-title">{title}</div>
+            <div class="deeptrace-result-message">{detail}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# -------------------- IMAGE MODE --------------------
+
 if media_type == "Image":
+    st.markdown(
+        '<div class="deeptrace-upload-card"><div class="deeptrace-section-title">📷 Check an image</div>'
+        '<div class="deeptrace-section-subtitle">Two AI detectors will compare their signals before giving a simple result.</div></div>',
+        unsafe_allow_html=True,
+    )
+
     image_uploaded = st.file_uploader(
-        "Upload a consented or appropriately licensed image",
+        "Choose an image",
         type=["jpg", "jpeg", "png", "webp"],
+        label_visibility="collapsed",
     )
 
     if image_uploaded is None:
         st.markdown(
-            "### Start an image investigation\n"
-            "Upload a JPG, JPEG, PNG, or WEBP image."
+            """
+            <div class="deeptrace-explain">
+                <b>How DeepTrace checks an image</b><br>
+                1. Two image detectors examine the same image.<br>
+                2. DeepTrace compares their results.<br>
+                3. If the evidence is clear, you get <b>Likely Real</b> or <b>Likely AI-Generated</b>.<br>
+                4. If the detectors are uncertain or disagree, you get <b>Needs Review</b> instead of a misleading yes/no answer.
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
         st.stop()
 
     if image_uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
-        st.error(
-            f"Please upload a file smaller than {MAX_UPLOAD_MB} MB."
-        )
+        st.error(f"Please choose an image smaller than {MAX_UPLOAD_MB} MB.")
         st.stop()
 
     image_data = image_uploaded.getvalue()
@@ -733,125 +1070,175 @@ if media_type == "Image":
         st.error(f"Could not open this image: {type(exc).__name__}.")
         st.stop()
 
-    st.image(image, caption=image_uploaded.name, use_container_width=True)
+    preview_col, info_col = st.columns([1.45, 1])
 
-    image_hash = hashlib.sha256(image_data).hexdigest()
+    with preview_col:
+        st.image(image, caption=image_uploaded.name, use_container_width=True)
 
-    st.subheader("Image investigation")
+    with info_col:
+        st.markdown("### Ready to check")
+        st.write(
+            "DeepTrace will compare two visual AI detectors instead of trusting a single model."
+        )
+        st.caption(
+            "This reduces overconfident results, but it cannot guarantee authenticity. "
+            "New AI image generators can still be difficult for older detectors to recognize."
+        )
 
-    image_key = hashlib.sha256(
-        json.dumps(
-            {
-                "media_sha256": image_hash,
-                "visual_model": visual_reference,
-                "visual_fake_label": visual_label,
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
+        image_hash = hashlib.sha256(image_data).hexdigest()
 
-    if st.button(
-        "Run Image Investigation",
-        type="primary",
-        disabled=not visual_reference or not visual_label,
-    ):
-        progress = st.progress(0.0, text="Loading visual detector…")
+        image_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "media_sha256": image_hash,
+                    "visual_model": visual_reference,
+                    "visual_fake_label": visual_label,
+                    "second_model": image_second_reference,
+                    "second_fake_label": image_second_label,
+                    "threshold": threshold,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
 
-        try:
-            detector = load_detector(
-                "image-classification",
-                visual_reference,
-            )
-            progress.progress(0.5, text="Analyzing image…")
+        if st.button(
+            "🔎 Check Image",
+            type="primary",
+            use_container_width=True,
+            disabled=not visual_reference or not visual_label or not image_second_reference or not image_second_label,
+        ):
+            progress = st.progress(0.0, text="Loading the image detectors…")
 
-            predictions = detector(image, top_k=None)
-            visual_value = fake_label_score(
-                predictions,
-                visual_label,
-            )
+            try:
+                detector_1 = load_detector("image-classification", visual_reference)
+                progress.progress(0.35, text="Checking with detector 1…")
+                predictions_1 = detector_1(image, top_k=None)
+                score_1 = fake_label_score(predictions_1, visual_label)
 
-            brightness, sharpness = image_quality(
-                [np.asarray(image)]
-            )
+                detector_2 = load_detector("image-classification", image_second_reference)
+                progress.progress(0.65, text="Checking with detector 2…")
+                predictions_2 = detector_2(image, top_k=None)
+                score_2 = fake_label_score(predictions_2, image_second_label)
 
-            if visual_value >= threshold:
-                status = "Visual model signal — review"
-            else:
-                status = "Visual model signal — below threshold"
+                brightness, sharpness = image_quality([np.asarray(image)])
 
-            image_result = {
-                "score": float(visual_value),
-                "status": status,
-                "brightness": brightness,
-                "sharpness": sharpness,
-                "image_hash": image_hash,
-                "model": visual_reference,
-                "fake_label": visual_label,
-                "run_key": image_key,
-            }
+                # The dedicated SteganographIA detector is used as the primary
+                # image decision model because its documented labels are
+                # `real` and `ai_generated` and its published validation reports
+                # a low false-positive rate on its test set. Detector 1 remains
+                # visible as a supporting signal.
+                #
+                # IMPORTANT: this is still a screening classifier, not ground truth.
+                # The 0.50 decision boundary is the model's binary-class boundary,
+                # not a claim that the image is "50% fake".
+                primary_fake_threshold = 0.50
 
-            st.session_state["image_investigation"] = image_result
-            progress.progress(1.0, text="Image investigation complete.")
-            progress.empty()
+                if score_2 >= primary_fake_threshold:
+                    status = "Likely AI-Generated / Manipulated"
+                    result_detail = (
+                        "The primary AI-image detector classified this image as AI-generated. "
+                        "Detector 1 is shown as supporting evidence. This is a screening result, not proof."
+                    )
+                else:
+                    status = "Likely Real"
+                    result_detail = (
+                        "The primary AI-image detector classified this image as real. "
+                        "Detector 1 is shown as supporting evidence. This does not guarantee authenticity."
+                    )
 
-        except Exception as exc:
-            progress.empty()
-            st.error(
-                f"Image investigation failed: "
-                f"{type(exc).__name__}: {str(exc)[:400]}"
-            )
-            st.stop()
+                combined_score = float(score_2)
+
+                image_result = {
+                    "score": combined_score,
+                    "score_1": float(score_1),
+                    "score_2": float(score_2),
+                    "status": status,
+                    "detail": result_detail,
+                    "brightness": brightness,
+                    "sharpness": sharpness,
+                    "image_hash": image_hash,
+                    "model": visual_reference,
+                    "fake_label": visual_label,
+                    "second_model": image_second_reference,
+                    "second_fake_label": image_second_label,
+                    "run_key": image_key,
+                }
+
+                st.session_state["image_investigation"] = image_result
+                progress.progress(1.0, text="Done.")
+                progress.empty()
+
+            except Exception as exc:
+                progress.empty()
+                st.error(
+                    f"Image check failed: {type(exc).__name__}: {str(exc)[:400]}"
+                )
+                st.stop()
 
     image_result = st.session_state.get("image_investigation")
 
     if not image_result or image_result.get("run_key") != image_key:
-        st.info(
-            "Run the image investigation for this file and model configuration."
+        st.markdown(
+            '<div class="deeptrace-explain"><b>Tip:</b> Press <b>Check Image</b> to analyze this image.</div>',
+            unsafe_allow_html=True,
         )
         st.stop()
 
-    result_col1, result_col2 = st.columns(2)
+    st.markdown("## Result")
+    show_simple_result(image_result["status"], image_result["detail"])
 
-    with result_col1:
-        st.subheader(image_result["status"])
-        display_score(
-            "Visual fake-class model score",
-            image_result["score"],
-        )
-
-    with result_col2:
-        st.subheader("Image quality observations")
-        st.write(
-            f"Brightness: {image_result['brightness']:.2f} / 255"
-        )
-        st.write(
-            f"Laplacian variance: {image_result['sharpness']:.2f}"
-        )
-
-    st.info(
-        "The visual score is an uncalibrated model signal, not a "
-        "percentage probability that the image is fake. Image quality "
-        "measurements are not evidence of manipulation."
+    st.markdown("### What does this mean?")
+    st.markdown(
+        """
+        <div class="deeptrace-explain">
+        <b>🟢 Likely Real:</b> Both detectors found only a low AI-generated signal.<br>
+        <b>🔴 Likely AI-Generated or Manipulated:</b> Both detectors found a strong signal.<br>
+        <b>🟡 Needs Review:</b> The evidence is mixed or not strong enough for a clear answer.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.subheader("Image evidence")
-    st.write(
-        f"Model: `{image_result['model']}`  \n"
-        f"Fake-class label: `{image_result['fake_label']}`"
+    with st.expander("🔬 Technical details"):
+        display_score("Detector 1 — fake signal", image_result["score_1"])
+        st.write(f"Model: `{image_result['model']}`")
+        st.write(f"Fake-class label: `{image_result['fake_label']}`")
+        display_score("Detector 2 — fake signal", image_result["score_2"])
+        st.write(f"Model: `{image_result['second_model']}`")
+        st.write(f"Fake-class label: `{image_result['second_fake_label']}`")
+        st.write(f"Average detector signal: {image_result['score']:.3f}")
+        st.write(f"Brightness: {image_result['brightness']:.2f} / 255")
+        st.write(f"Sharpness: {image_result['sharpness']:.2f}")
+        st.caption(
+            "Detector scores are uncalibrated signals. They are NOT percentages or probabilities that the image is fake. "
+            "The 0.10 review floor is only a conservative screening rule."
+        )
+
+    st.warning(
+        "⚠️ **Important:** AI-image detectors can miss newer generators and can also make mistakes. "
+        "For important decisions, verify the source and original file when possible."
     )
 
     st.download_button(
-        "Download image investigation report · JSON",
+        "⬇️ Download investigation report",
         data=json.dumps(
             {
                 "project": "DeepTrace",
-                "version": "0.1-research-prototype",
+                "version": "0.4-primary-image-detector",
                 "media_type": "image",
                 "filename": image_uploaded.name,
                 "file_sha256": image_result["image_hash"],
-                "model": image_result["model"],
-                "fake_label": image_result["fake_label"],
-                "visual_model_score": image_result["score"],
+                "detector_1": {
+                    "model": image_result["model"],
+                    "fake_label": image_result["fake_label"],
+                    "fake_signal": image_result["score_1"],
+                },
+                "detector_2": {
+                    "model": image_result["second_model"],
+                    "fake_label": image_result["second_fake_label"],
+                    "fake_signal": image_result["score_2"],
+                },
+                "primary_ai_signal": image_result["score"],
                 "status": image_result["status"],
                 "quality": {
                     "brightness_0_255": image_result["brightness"],
@@ -859,8 +1246,8 @@ if media_type == "Image":
                 },
                 "limitations": [
                     "Not a validated authenticity detector.",
-                    "Model output is not a calibrated authenticity probability.",
-                    "The visual model classifies the image as a whole.",
+                    "Detector outputs are uncalibrated signals.",
+                    "Model cards warn about concept drift with newer AI generators.",
                     "Quality measurements are not evidence of manipulation.",
                 ],
             },
@@ -876,24 +1263,33 @@ if media_type == "Image":
 
 # -------------------- VIDEO MODE --------------------
 
+st.markdown(
+    '<div class="deeptrace-upload-card"><div class="deeptrace-section-title">🎬 Check a video</div>'
+    '<div class="deeptrace-section-subtitle">MP4, MOV, AVI, WEBM or MKV · Maximum 100 MB · First 60 seconds analyzed</div></div>',
+    unsafe_allow_html=True,
+)
+
 uploaded = st.file_uploader(
-    "Upload a consented or appropriately licensed video",
+    "Choose a video",
     type=["mp4", "mov", "avi", "webm", "mkv"],
+    label_visibility="collapsed",
 )
 
 if uploaded is None:
     st.markdown(
-        "### Start a video investigation\n"
-        "Upload a short video, then select **Run investigation**. "
-        "The app works without model checkpoints in quality-inspection mode."
+        """
+        <div class="deeptrace-explain">
+            <b>How video checking works:</b> DeepTrace divides the video into short
+            sections, checks sampled frames and optional audio, then shows which
+            sections need attention.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
     st.stop()
 
-
 if uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
-    st.error(
-        f"Please upload a file smaller than {MAX_UPLOAD_MB} MB."
-    )
+    st.error(f"Please choose a video smaller than {MAX_UPLOAD_MB} MB.")
     st.stop()
 
 data = uploaded.getvalue()
@@ -902,12 +1298,10 @@ suffix = os.path.splitext(uploaded.name)[1].lower()
 
 st.video(data)
 
-st.caption(
-    f"File: {uploaded.name} · "
-    f"Size: {len(data) / (1024 * 1024):.1f} MB · "
-    f"Analysis capped at the first {MAX_ANALYSIS_SECONDS} seconds"
-)
-
+meta1, meta2, meta3 = st.columns(3)
+meta1.metric("File size", f"{len(data) / (1024 * 1024):.1f} MB")
+meta2.metric("Maximum analysis", f"{MAX_ANALYSIS_SECONDS}s")
+meta3.metric("Section length", f"{window_seconds}s")
 
 configuration = {
     "media_sha256": media_hash,
@@ -918,36 +1312,25 @@ configuration = {
     "audio_fake_label": audio_label,
 }
 
-
 run_key = hashlib.sha256(
-    json.dumps(
-        configuration,
-        sort_keys=True,
-    ).encode()
+    json.dumps(configuration, sort_keys=True).encode()
 ).hexdigest()
-
 
 invalid_labels = (
     (bool(visual_reference) and not visual_label)
     or (bool(audio_reference) and not audio_label)
 )
 
-
 if invalid_labels:
-    st.warning(
-        "Enter the documented fake-class label for each configured model."
-    )
-
+    st.warning("Enter the documented AI/fake label for each configured model.")
 
 if st.button(
-    "Run investigation",
+    "🔎 Check Video",
     type="primary",
+    use_container_width=True,
     disabled=invalid_labels,
 ):
-    progress = st.progress(
-        0.0,
-        text="Preparing investigation…",
-    )
+    progress = st.progress(0.0, text="Preparing video check…")
 
     try:
         result = investigate(
@@ -962,29 +1345,24 @@ if st.button(
         )
 
         result["run_key"] = run_key
-        result["created_utc"] = datetime.now(
-            timezone.utc
-        ).isoformat()
+        result["created_utc"] = datetime.now(timezone.utc).isoformat()
 
         st.session_state["investigation"] = result
         progress.empty()
 
     except Exception as exc:
         progress.empty()
-        st.error(f"Investigation failed: {exc}")
+        st.error(f"Video check failed: {exc}")
         st.stop()
-
 
 result = st.session_state.get("investigation")
 
-
 if not result or result.get("run_key") != run_key:
-    st.info(
-        "Run the investigation for this file and detector configuration. "
-        "Fusion settings can be adjusted afterward without rerunning models."
+    st.markdown(
+        '<div class="deeptrace-explain"><b>Ready.</b> Press <b>Check Video</b> to start the analysis.</div>',
+        unsafe_allow_html=True,
     )
     st.stop()
-
 
 enriched_rows = []
 
@@ -1002,11 +1380,10 @@ for original in result["rows"]:
     row["status"] = status
     enriched_rows.append(row)
 
-
 table = pd.DataFrame(enriched_rows)
 
 elevated = sum(
-    row["status"] == "Elevated model signal — review"
+    row["status"] == "Likely AI-Generated / Manipulated"
     for row in enriched_rows
 )
 
@@ -1015,78 +1392,74 @@ abstained = sum(
     for row in enriched_rows
 )
 
+st.markdown("## Video result")
 
-col1, col2, col3, col4 = st.columns(4)
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Video analyzed", f"{result['analyzed_seconds']:.1f}s")
+m2.metric("Sections checked", len(enriched_rows))
+m3.metric("AI/manipulation signals", elevated)
+m4.metric("Needs review", abstained)
 
-col1.metric(
-    "Analyzed",
-    f"{result['analyzed_seconds']:.1f}s",
-)
-col2.metric(
-    "Segments",
-    len(enriched_rows),
-)
-col3.metric(
-    "Review flags",
-    elevated,
-)
-col4.metric(
-    "Abstained segments",
-    abstained,
-)
+if abstained > 0:
+    show_simple_result(
+        "Needs Review",
+        f"{abstained} video section(s) need a closer look because the available checks did not agree. "
+        "DeepTrace intentionally does not label those sections as simply real or fake.",
+    )
+elif elevated > 0:
+    show_simple_result(
+        "Likely AI-Generated / Manipulated",
+        f"{elevated} section(s) showed a stronger AI/manipulation signal. "
+        "Review those sections before drawing a conclusion.",
+    )
+else:
+    show_simple_result(
+        "Likely Real",
+        "No strong AI/manipulation signal was found in the analyzed sections. "
+        "This does not guarantee that the video is authentic.",
+    )
 
 st.caption(
-    f"Processing time: {result['processing_seconds']:.1f}s. "
-    "A review flag is not a confirmed deepfake."
+    f"Processing time: {result['processing_seconds']:.1f}s · "
+    "Results are screening signals, not proof of authenticity."
 )
-
 
 overview_tab, inspect_tab, agent_tab, export_tab = st.tabs(
-    [
-        "Evidence timeline",
-        "Segment inspector",
-        "Investigation agent",
-        "Export",
-    ]
+    ["📊 Overview", "🔎 Check a section", "💬 Explain a result", "⬇️ Export"]
 )
 
-
 with overview_tab:
-    st.dataframe(
-        table[
-            [
-                "segment",
-                "start_s",
-                "end_s",
-                "visual_model_score",
-                "audio_model_score",
-                "fused_model_score",
-                "status",
-                "notes",
-            ]
-        ],
-        hide_index=True,
-        use_container_width=True,
-    )
+    st.markdown("### Section-by-section result")
 
-    if not visual_reference and not audio_reference:
-        st.warning(
-            "Quality-inspection mode: no deepfake detectors were configured. "
-            "All authenticity-related decisions remain insufficient evidence."
-        )
+    display_table = table[[
+        "segment", "start_s", "end_s", "visual_model_score",
+        "audio_model_score", "fused_model_score", "status", "notes"
+    ]].rename(columns={
+        "segment": "Section",
+        "start_s": "Start (sec)",
+        "end_s": "End (sec)",
+        "visual_model_score": "Visual signal",
+        "audio_model_score": "Audio signal",
+        "fused_model_score": "Combined signal",
+        "status": "Result",
+        "notes": "Notes",
+    })
+
+    st.dataframe(display_table, hide_index=True, use_container_width=True)
 
     st.caption(
-        "Temporal localization is limited to analysis windows. "
-        "This application does not identify exact manipulated frames."
+        "The timeline shows screening results for each analysis window. "
+        "It does not identify exact manipulated frames."
     )
 
-
 with inspect_tab:
+    st.markdown("### Inspect one section")
+
     selected = st.selectbox(
-        "Select a segment",
+        "Choose a video section",
         options=range(len(enriched_rows)),
         format_func=lambda index: (
-            f"Segment {index + 1}: "
+            f"Section {index + 1}: "
             f"{enriched_rows[index]['start_s']:.1f}–"
             f"{enriched_rows[index]['end_s']:.1f}s"
         ),
@@ -1103,11 +1476,10 @@ with inspect_tab:
         )
 
         thumbnail = result["thumbnails"][selected]
-
         if thumbnail is not None:
             st.image(
                 thumbnail,
-                caption="Sampled frame—not a manipulation heatmap",
+                caption="Sampled frame — not a manipulation heatmap",
                 use_container_width=True,
             )
 
@@ -1118,161 +1490,98 @@ with inspect_tab:
             ]
 
             if audio_slice.size:
-                st.audio(
-                    wav_bytes(audio_slice, AUDIO_RATE),
-                    format="audio/wav",
-                )
+                st.audio(wav_bytes(audio_slice, AUDIO_RATE), format="audio/wav")
 
     with evidence_col:
-        st.subheader(row["status"])
-
-        display_score(
-            "Visual fake-class model score",
-            row["visual_model_score"],
+        show_simple_result(
+            row["status"],
+            "This section is the part of the video that the detector is describing. "
+            "Use the technical measurements below if you need to understand why.",
         )
 
-        display_score(
-            "Audio fake-class model score",
-            row["audio_model_score"],
-        )
-
-        display_score(
-            "Model evidence score",
-            row["fused_model_score"],
-        )
+        with st.expander("Technical evidence", expanded=True):
+            display_score("Visual signal", row["visual_model_score"])
+            display_score("Audio signal", row["audio_model_score"])
+            display_score("Combined signal", row["fused_model_score"])
 
         st.write(row["notes"])
 
-        quality = pd.DataFrame(
-            [
-                {
-                    "Measurement": "Brightness",
-                    "Value": row["brightness_0_255"],
-                },
-                {
-                    "Measurement": "Laplacian variance",
-                    "Value": row["sharpness_variance"],
-                },
-                {
-                    "Measurement": "Audio level, dBFS",
-                    "Value": row["audio_rms_dbfs"],
-                },
-                {
-                    "Measurement": "Audio clipping fraction",
-                    "Value": row["audio_clipping_fraction"],
-                },
-            ]
-        )
+        quality = pd.DataFrame([
+            {"Measurement": "Brightness", "Value": row["brightness_0_255"]},
+            {"Measurement": "Sharpness", "Value": row["sharpness_variance"]},
+            {"Measurement": "Audio level, dBFS", "Value": row["audio_rms_dbfs"]},
+            {"Measurement": "Audio clipping fraction", "Value": row["audio_clipping_fraction"]},
+        ])
 
-        st.dataframe(
-            quality,
-            hide_index=True,
-            use_container_width=True,
-        )
-
+        with st.expander("Media quality measurements"):
+            st.dataframe(quality, hide_index=True, use_container_width=True)
 
 with agent_tab:
-    st.subheader("Evidence-grounded assistant")
+    st.markdown("### Explain the evidence")
+
     st.caption(
-        "This is a deterministic, rule-based assistant—not an LLM. "
-        "It only explains measurements and detector outputs already obtained."
+        "This assistant is rule-based. It explains measurements and detector outputs already produced by DeepTrace; it does not independently decide whether media is authentic."
     )
 
     agent_segment = st.selectbox(
-        "Segment to discuss",
+        "Choose a section",
         range(len(enriched_rows)),
-        format_func=lambda index: f"Segment {index + 1}",
+        format_func=lambda index: f"Section {index + 1}",
         key="agent_segment",
     )
 
     with st.form("question_form"):
         question = st.text_input(
-            "Ask about this segment",
-            placeholder="Why was this segment flagged?",
+            "What do you want to understand?",
+            placeholder="Why was this section marked for review?",
         )
-        submitted = st.form_submit_button("Explain evidence")
+        submitted = st.form_submit_button("Explain")
 
     if submitted:
         if question.strip():
-            st.write(
-                explain_segment(
-                    enriched_rows[agent_segment],
-                    question,
-                )
+            st.markdown(
+                '<div class="deeptrace-explain">' +
+                explain_segment(enriched_rows[agent_segment], question) +
+                "</div>",
+                unsafe_allow_html=True,
             )
         else:
-            st.info("Enter a question about the selected segment.")
+            st.info("Type a question first.")
 
-    with st.expander("Agent execution log"):
-        st.code(
-            "\n".join(result["logs"]),
-            language="text",
-        )
-
+    with st.expander("Technical execution log"):
+        st.code("\n".join(result["logs"]), language="text")
 
 with export_tab:
-    report = {
+    st.markdown("### Save your investigation")
+
+    export_payload = {
         "project": "DeepTrace",
-        "version": "0.1-research-prototype",
-        "created_utc": result["created_utc"],
-        "exported_utc": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "version": "0.2-research-prototype",
+        "media_type": "video",
         "filename": uploaded.name,
+        "file_sha256": media_hash,
         "configuration": configuration,
-        "fusion": {
-            "visual_weight": visual_weight,
-            "audio_weight": 1 - visual_weight,
-            "review_threshold": threshold,
-            "maximum_disagreement": disagreement_limit,
-            "calibrated": False,
-        },
-        "duration_s": result["duration_s"],
         "analyzed_seconds": result["analyzed_seconds"],
         "processing_seconds": result["processing_seconds"],
-        "segments": enriched_rows,
-        "execution_log": result["logs"],
+        "sections": enriched_rows,
         "limitations": [
             "Not a validated authenticity detector.",
-            "Model outputs are not calibrated authenticity probabilities.",
-            "No lip-sync detector is implemented.",
-            "Visual baseline samples three whole frames per segment.",
-            "Quality warnings are not evidence of manipulation.",
-            "Analysis is limited to the first 60 seconds.",
-            "Checkpoint compatibility and label meanings require verification.",
-            "No authenticity conclusion should rely on this report alone.",
+            "Model scores are uncalibrated signals, not authenticity probabilities.",
+            "Temporal localization is limited to analysis windows.",
+            "Quality measurements are not evidence of manipulation.",
         ],
     }
 
     st.download_button(
-        "Download investigation report · JSON",
-        data=json.dumps(
-            report,
-            indent=2,
-            allow_nan=False,
-        ),
-        file_name="deeptrace_report.json",
+        "⬇️ Download video investigation report",
+        data=json.dumps(export_payload, indent=2, allow_nan=False),
+        file_name="deeptrace_video_report.json",
         mime="application/json",
+        use_container_width=True,
     )
-
-    st.download_button(
-        "Download segment evidence · CSV",
-        data=table.to_csv(index=False).encode("utf-8"),
-        file_name="deeptrace_segments.csv",
-        mime="text/csv",
-    )
-
-    st.caption(
-        "Reports contain measurements, model references, and a file hash; "
-        "they do not embed the uploaded video."
-    )
-
 
 st.divider()
 st.caption(
-    "DeepTrace · Research and educational use · "
-    "Temporary media files are deleted after analysis. "
-    "Results remain in session memory until cleared or the session ends. "
-    "Model downloads may contact Hugging Face; media is not sent there "
-    "by this application."
+    "DeepTrace • Research and educational use • "
+    "Results are screening signals, not proof of authenticity."
 )
